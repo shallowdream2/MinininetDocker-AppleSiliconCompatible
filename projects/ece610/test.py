@@ -65,6 +65,8 @@ class LoadBalancerTopo(Topo):
 import time
 import json
 import re
+import glob
+import os
 
 def run_auto_grader(net):
     print("\n" + "="*50)
@@ -74,6 +76,11 @@ def run_auto_grader(net):
     h1, h2, h3 = net.get('h1'), net.get('h2'), net.get('h3')
     lb, b1, b2, b3 = net.get('lb'), net.get('b1'), net.get('b2'), net.get('b3')
 
+    # Discover all sample input files sorted by name
+    sample_input_files = sorted(glob.glob('sample_inputs/sample_input_*.txt'))
+    n = len(sample_input_files)
+    print(f"\n[+] 发现 {n} 个输入文件: {[os.path.basename(f) for f in sample_input_files]}")
+
     print("\n[+] 1. 在后台启动所有服务器...")
     b1.cmd('python3 backend_server.py &')
     b2.cmd('python3 backend_server.py &')
@@ -81,14 +88,11 @@ def run_auto_grader(net):
     lb.cmd('python3 load_balancer.py &')
     time.sleep(2)  
 
-    print("\n[+] 2. 执行单客户端顺序请求测试 (30 分测试项)...")
+    print(f"\n[+] 2. 执行单客户端顺序请求测试 (30 分测试项, 共 {n} 个输入)...")
     backends_hit = []
-    pass_seq = True
-    for i in range(4):
-
-        output = h1.cmd('python3 client.py sample_inputs/sample_input_1.txt 10.0.0.9 5000')
-        print(f"   [请求 {i+1}] 原始输出: {output.strip()}")
-        
+    for i, input_file in enumerate(sample_input_files):
+        output = h1.cmd(f'python3 client.py {input_file} 10.0.0.9 5000')
+        print(f"   [请求 {i+1}] 输入文件: {os.path.basename(input_file)}, 原始输出: {output.strip()}")
 
         match = re.search(r'(\{.*?\})', output)
         if match:
@@ -96,30 +100,42 @@ def run_auto_grader(net):
                 resp = json.loads(match.group(1))
                 backends_hit.append(resp.get('backend'))
             except json.JSONDecodeError:
-                pass_seq = False
+                backends_hit.append(None)
         else:
-            pass_seq = False
+            backends_hit.append(None)
 
-
-    if len(backends_hit) == 4 and len(set(backends_hit[:3])) == 3 and backends_hit[0] == backends_hit[3]:
-        print(f"单点测试通过！完美的轮询顺序: {backends_hit}")
+    # Verify round-robin: first 3 responses must hit all 3 different backends,
+    # and every subsequent response must follow the same cycling order.
+    if len(backends_hit) >= 3 and None not in backends_hit:
+        base_order = backends_hit[:3]
+        if len(set(base_order)) == 3:
+            rr_ok = all(backends_hit[i] == base_order[i % 3] for i in range(len(backends_hit)))
+            if rr_ok:
+                print(f"单点测试通过！完美的轮询顺序: {backends_hit}")
+            else:
+                print(f"单点测试失败！顺序错误: {backends_hit}")
+        else:
+            print(f"单点测试失败！前3个请求未分发到3个不同后端: {backends_hit[:3]}")
     else:
-        print(f"单点测试失败！顺序错误或有遗漏: {backends_hit}")
+        print(f"单点测试失败！响应不足或存在错误: {backends_hit}")
 
     print("\n[+] 3. 执行多客户端并发请求测试 (30 分测试项)...")
+    # Assign a different input file to each client (cycling through available files)
+    input_h1 = sample_input_files[0 % n]
+    input_h2 = sample_input_files[1 % n]
+    input_h3 = sample_input_files[2 % n]
 
-    p1 = h1.popen('python3 client.py sample_inputs/sample_input_1.txt 10.0.0.9 5000')
-    p2 = h2.popen('python3 client.py sample_inputs/sample_input_1.txt 10.0.0.9 5000')
-    p3 = h3.popen('python3 client.py sample_inputs/sample_input_1.txt 10.0.0.9 5000')
-    
+    p1 = h1.popen(f'python3 client.py {input_h1} 10.0.0.9 5000')
+    p2 = h2.popen(f'python3 client.py {input_h2} 10.0.0.9 5000')
+    p3 = h3.popen(f'python3 client.py {input_h3} 10.0.0.9 5000')
 
     out1, _ = p1.communicate()
     out2, _ = p2.communicate()
     out3, _ = p3.communicate()
     
-    print(f"   [h1 收到的响应] : {out1.decode().strip()}")
-    print(f"   [h2 收到的响应] : {out2.decode().strip()}")
-    print(f"   [h3 收到的响应] : {out3.decode().strip()}")
+    print(f"   [h1 ({os.path.basename(input_h1)}) 收到的响应] : {out1.decode().strip()}")
+    print(f"   [h2 ({os.path.basename(input_h2)}) 收到的响应] : {out2.decode().strip()}")
+    print(f"   [h3 ({os.path.basename(input_h3)}) 收到的响应] : {out3.decode().strip()}")
     print("   请人工确认上方三行：如果未报错、无卡顿，且成功返回了各自对应的 JSON 结果，说明并发测试通过！")
 
     print("\n[+] 4. 清理后台服务器进程...")
