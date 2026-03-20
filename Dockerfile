@@ -64,6 +64,8 @@ RUN git clone https://github.com/mininet/mininet.git /tmp/mininet && \
     echo "Mininet installation completed" && \
     rm -rf /tmp/mininet
 
+RUN git clone https://github.com/noxrepo/pox.git /opt/pox
+
 # Create working directory
 WORKDIR /app
 
